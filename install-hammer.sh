@@ -85,6 +85,14 @@ function download {
 	echo "$F"
 }
 
+function download-dxvk-tarball {
+	wget -O - $(\
+			wget -O - 'https://api.github.com/repos/doitsujin/dxvk/releases/latest' 2> /dev/null \
+			| jq -r '.assets[] | select(.name | test("dxvk-([0-9]+.)+tar.gz")) | .browser_download_url' \
+		) 2> /dev/null \
+		| gunzip -c
+}
+
 # Argument parsing
 for a in $@; do
 	case $a in 
@@ -115,6 +123,7 @@ done
 
 # Check for required software 
 require-program "wget"
+require-program "jq"
 [ $GUI -ne 0 ] && require-program "zenity"
 
 # Before we do anything else, show the configuration dialog to the user, if GUI is enabled
@@ -194,25 +203,42 @@ function install-vcrun2019 {
 	rm -f "$FILE" || true # Eat errors here
 }
 
+function install-dxvk {
+	DIR=$(mktemp -d)
+	FILE=$DIR/dll_overrides.reg
+
+	download-dxvk-tarball | tar x -C $DIR \
+		|| error "Failed to download dxvk!\nYou may need to do this manually."
+	cp -f $DIR/dxvk*/x64/*.dll $WINEPREFIX/drive_c/windows/system32
+	cp -f $DIR/dxvk*/x32/*.dll $WINEPREFIX/drive_c/windows/syswow64
+
+	echo "Windows Registry Editor Version 5.00" >> $FILE
+	echo >> $FILE
+	echo "[HKEY_CURRENT_USER\\Software\\Wine\\DllOverrides]" >> $FILE
+	for override in dxgi d3d9 d3d10core d3d11; do
+		echo "\"$override\"=\"native,builtin\"" >> $FILE
+	done
+	echo >> $FILE
+	"$WINE" regedit $FILE \
+		|| error "Failed to apply DLL overrides for dxvk!\nYou may need to do this manually."
+
+	rm -rf $DIR
+}
+
 
 # Ask the user what to install
 if [ $GUI -ne 0 ]; then
-	RESPONSE=$(zenity --list \
+	for dependency in $(zenity --list \
 		--title="Dependency Installer" \
 		--text="Select the dependencies to install" \
 		--checklist \
 		--column="Install" \
 		--column="Component Name" \
 		--width=350 \
-		--separator="," \
-		TRUE "vcrun2019")
-	IFS=','
-	VALS=($RESPONSE)
-	unset IFS
-	for i in "${VALS[$@]}"; do
-		if [ "$i" == "vcrun2019" ]; then
-			install-vcrun2019
-		fi
+		--separator="\n" \
+		TRUE "vcrun2019" \
+		TRUE "dxvk"); do
+		"install-$dependency"
 	done
 fi
 
